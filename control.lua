@@ -424,6 +424,24 @@ end
 
 local function mlc_log(...) log(...) end -- to avoid logging func code
 
+-- Detect Moon-Logic input wire proxies and snapshot them to a plain table
+local function is_wire_proxy(v)
+  if type(v) ~= 'table' then return false end
+  local mt = getmetatable(v)
+  -- red/green proxies are metatables with __index = cn_input_signal_get
+  return mt and mt.__index == cn_input_signal_get
+end
+
+local function snapshot_wire_proxy(wenv)
+  -- Use the proxy's iterator to get a {short_signal_name = count} table
+  -- (cn_input_signal_iter already shortens names and returns present signals)
+  local snap, iter_tbl = {}, cn_input_signal_iter(wenv)
+  for name, val in pairs(iter_tbl) do
+    if val ~= 0 then snap[name] = val end
+  end
+  return snap
+end
+
 local function mlc_init(e)
 	-- Inits *local* mlc_env state for combinator - builds env, evals lua code, etc
 	-- *storage* (previously `global`) state will be used for init values if it exists, otherwise empty defaults
@@ -471,13 +489,26 @@ local function mlc_init(e)
 	setmetatable(env_ro, {__index=sandbox_env_base})
 
 	if not mlc.vars.var then mlc.vars.var = {} end
-	local env = setmetatable(mlc.vars, { -- env_ro + mlc.vars
-		__index=env_ro, __newindex=function(vars, k, v)
+	local env = setmetatable({}, {
+		__index = function(_, k)
+			local v = mlc.vars[k]
+			if v ~= nil then return v end
+			return env_ro[k]
+		end,
+		__newindex = function(_, k, v)
 			if k == 'out' then
-				cn_output_table_replace(env_ro.out, v)
-				rawset(env_wire_red, '_debug', v)
-				rawset(env_wire_green, '_debug', v)
-			else rawset(vars, k, v) end end })
+			cn_output_table_replace(env_ro.out, v)
+			rawset(env_wire_red,   '_debug', v)
+			rawset(env_wire_green, '_debug', v)
+			return
+			end
+			-- turn red/green proxies into snapshots
+			if is_wire_proxy(v) then
+			v = snapshot_wire_proxy(v)
+			end
+			rawset(mlc.vars, k, v)
+		end
+	})
 
 	mlc_env.debug_wires_set = function(v)
 		local v_prev = rawget(env_wire_red, '_debug')
